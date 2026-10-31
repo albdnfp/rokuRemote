@@ -1,8 +1,52 @@
 #!/usr/bin/env python3
 
+import os
+import sys
+import signal
+import atexit
 from tkinter import Toplevel, messagebox, ttk, Canvas
 import tkinter as tk
 from roku import Roku
+
+# --- Single-Instance Check ---
+PID_FILE = os.path.expanduser("~/.roku_remote.pid")
+
+def ensure_single_instance():
+    """Ensure only one instance of the Roku remote runs at a time. 
+       Kills any previous instance if found."""
+    if os.path.exists(PID_FILE):
+        try:
+            with open(PID_FILE, "r") as f:
+                old_pid = int(f.read().strip())
+            # Check if the process is still running (os.kill with signal 0 doesn't kill, just checks existence)
+            os.kill(old_pid, 0)
+            # If it exists, terminate it
+            os.kill(old_pid, signal.SIGTERM)
+        except (ValueError, OSError):
+            # Process is not running or PID file is stale
+            pass
+        
+    # Write current process ID to the lock file
+    try:
+        with open(PID_FILE, "w") as f:
+            f.write(str(os.getpid()))
+    except Exception as e:
+        print("Warning: Could not create PID file:", e)
+
+    # Clean up PID file on exit
+    @atexit.register
+    def cleanup():
+        if os.path.exists(PID_FILE):
+            try:
+                with open(PID_FILE, "r") as f:
+                    pid = int(f.read().strip())
+                if pid == os.getpid():
+                    os.remove(PID_FILE)
+            except Exception:
+                pass
+
+# Run the single-instance check immediately on startup
+ensure_single_instance()
 
 # Global variables
 roku = None
@@ -39,7 +83,6 @@ def open_device_scanner():
         try:
             rokus = Roku.discover(timeout=2)
             for dev in rokus:
-                # Attempt to grab device info/name if available
                 try:
                     info = dev.device_info
                     name = info.user_device_name or info.model_name or "Roku Device"
@@ -83,7 +126,6 @@ def open_device_scanner():
     ok_btn.pack(side=tk.LEFT, padx=5)
     cancel_btn.pack(side=tk.RIGHT, padx=5)
     
-    # Run initial scan inside the popup
     top.after(100, perform_scan)
 
 def update_status(color, message):
@@ -189,7 +231,7 @@ scan_btn.pack(pady=(15, 5))
 buttonQuote.pack(pady=5)
 buttonLayout.pack(pady=5)
 
-# Status LED frame in bottom right corner (or anchored neatly)
+# Status LED frame in bottom right corner
 status_frame = tk.Frame(r)
 status_frame.pack(side=tk.BOTTOM, fill=tk.X, padx=10, pady=8)
 
