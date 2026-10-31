@@ -2,7 +2,7 @@ import SwiftUI
 import Network
 import AppKit
 
-// MARK: - SSDP Multi-Device Discovery with Interface Binding
+// MARK: - Bulletproof SSDP Discovery
 struct RokuDevice: Identifiable, Hashable {
     let id = UUID()
     let name: String
@@ -13,39 +13,50 @@ func discoverRokuDevices() -> [RokuDevice] {
     let ssdpAddress = "239.255.255.250"
     let ssdpPort: UInt16 = 1900
     
-    let searchMessage = """
-    M-SEARCH * HTTP/1.1\r
-    Host: \(ssdpAddress):\(ssdpPort)\r
-    Man: "ssdp:discover"\r
-    ST: roku:ecp\r\n\r\n
-    """
+    let searchMessage = "M-SEARCH * HTTP/1.1\r\n" +
+                        "Host: 239.255.255.250:1900\r\n" +
+                        "Man: \"ssdp:discover\"\r\n" +
+                        "ST: roku:ecp\r\n\r\n"
     
     var discoveredDevices: [RokuDevice] = []
     
     let sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
     guard sock >= 0 else { return [] }
+    defer { close(sock) }
     
     var reuse: Int32 = 1
     setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout.size(ofValue: reuse)))
     
-    var broadcast: Int32 = 1
-    setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &broadcast, socklen_t(MemoryLayout.size(ofValue: broadcast)))
+    var localAddr = sockaddr_in()
+    localAddr.sin_family = sa_family_t(AF_INET)
+    localAddr.sin_port = 0
+    localAddr.sin_addr.s_addr = INADDR_ANY.bigEndian
     
-    var addr = sockaddr_in()
-    addr.sin_family = sa_family_t(AF_INET)
-    addr.sin_port = ssdpPort.bigEndian
-    addr.sin_addr.s_addr = inet_addr(ssdpAddress)
+    let bindResult = withUnsafePointer(to: &localAddr) {
+        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+            bind(sock, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+        }
+    }
+    guard bindResult >= 0 else { return [] }
     
-    let data = searchMessage.data(using: .utf8)!
-    data.withUnsafeBytes { ptr in
-        _ = withUnsafePointer(to: &addr) { targetAddr in
+    var destAddr = sockaddr_in()
+    destAddr.sin_family = sa_family_t(AF_INET)
+    destAddr.sin_port = ssdpPort.bigEndian
+    destAddr.sin_addr.s_addr = inet_addr(ssdpAddress)
+    
+    guard let data = searchMessage.data(using: .utf8) else { return [] }
+    
+    let sent = data.withUnsafeBytes { ptr in
+        withUnsafePointer(to: &destAddr) { targetAddr in
             targetAddr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa in
                 sendto(sock, ptr.baseAddress, data.count, 0, sa, socklen_t(MemoryLayout<sockaddr_in>.size))
             }
         }
     }
     
-    let timeout: TimeInterval = 2.0
+    guard sent >= 0 else { return [] }
+    
+    let timeout: TimeInterval = 3.0
     let startTime = Date()
     
     while Date().timeIntervalSince(startTime) < timeout {
@@ -76,7 +87,10 @@ func discoverRokuDevices() -> [RokuDevice] {
                     }
                 }
                 if upper.hasPrefix("SERVER:") {
-                    deviceName = line.components(separatedBy: ":").dropFirst().joined(separator: ":").trimmingCharacters(in: .whitespaces)
+                    let comps = line.components(separatedBy: ":")
+                    if comps.count > 1 {
+                        deviceName = comps.dropFirst().joined(separator: ":").trimmingCharacters(in: .whitespaces)
+                    }
                 }
             }
             
@@ -90,7 +104,6 @@ func discoverRokuDevices() -> [RokuDevice] {
         }
     }
     
-    close(sock)
     return discoveredDevices
 }
 
@@ -175,7 +188,7 @@ struct RemoteWindowView: View {
                             .foregroundColor(.secondary)
                     }
                     .buttonStyle(.borderless)
-                    .help("Click to rescan or enter IP manually")
+                    .help("Click to rescan network")
                     
                     Spacer()
                     
@@ -235,14 +248,11 @@ struct RemoteWindowView: View {
             NSApplication.shared.activate(ignoringOtherApps: true)
             
             if !manualRokuIP.isEmpty {
-                rokuIP = manualRokuIP
-                deviceDisplayName = "Manual (\(manualRokuIP))"
-                connectionStatus = .online
+                verifyAndSetRokuIP(manualRokuIP)
             } else {
                 scanAndShowPicker()
             }
             
-            // AppKit monitor that intercepts keys and returns nil (silencing the system beep entirely)
             eventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { event in
                 if event.type == .flagsChanged {
                     if event.modifierFlags.contains(.shift) {
@@ -277,11 +287,8 @@ struct RemoteWindowView: View {
                 showingManualIPPrompt = true
             }) { chosenDevice in
                 if let dev = chosenDevice {
-                    self.selectedDevice = dev
-                    self.rokuIP = dev.ip
+                    verifyAndSetRokuIP(dev.ip)
                     self.deviceDisplayName = dev.name
-                    self.manualRokuIP = ""
-                    self.connectionStatus = .online
                 }
                 showingDevicePicker = false
             }
@@ -289,10 +296,8 @@ struct RemoteWindowView: View {
         .sheet(isPresented: $showingManualIPPrompt) {
             ManualIPView(ipInput: $manualInputText) { enteredIP in
                 if !enteredIP.isEmpty {
-                    self.manualRokuIP = enteredIP
-                    self.rokuIP = enteredIP
-                    self.deviceDisplayName = "Manual (\(enteredIP))"
-                    self.connectionStatus = .online
+                    let cleaned = enteredIP.trimmingCharacters(in: .whitespacesAndNewlines)
+                    verifyAndSetRokuIP(cleaned)
                 }
                 showingManualIPPrompt = false
             }
@@ -305,7 +310,7 @@ struct RemoteWindowView: View {
             let targetKey = binding.keyChar.lowercased()
             if targetKey == target && !targetKey.isEmpty {
                 sendCommand(binding.command)
-                return true // Handled successfully, suppresses sound
+                return true
             }
         }
         return false
@@ -315,27 +320,51 @@ struct RemoteWindowView: View {
         connectionStatus = .scanning
         rokuIP = "Scanning..."
         deviceDisplayName = "Scanning..."
+        
         DispatchQueue.global().async {
             let devices = discoverRokuDevices()
             DispatchQueue.main.async {
                 self.foundDevices = devices
                 if let first = devices.first {
-                    self.selectedDevice = first
-                    self.rokuIP = first.ip
+                    self.verifyAndSetRokuIP(first.ip)
                     self.deviceDisplayName = first.name
-                    self.connectionStatus = .online
+                } else if !self.manualRokuIP.isEmpty {
+                    self.verifyAndSetRokuIP(self.manualRokuIP)
                 } else {
-                    let fallback = self.manualRokuIP.isEmpty ? "192.168.1.50" : self.manualRokuIP
-                    self.rokuIP = fallback
-                    self.deviceDisplayName = "Not Found (Click to set IP)"
+                    self.rokuIP = "Not Found"
+                    self.deviceDisplayName = "Scan Failed"
                     self.connectionStatus = .offline
                     self.showingDevicePicker = true
                 }
                 if devices.count > 1 {
-                    showingDevicePicker = true
+                    self.showingDevicePicker = true
                 }
             }
         }
+    }
+    
+    func verifyAndSetRokuIP(_ ip: String) {
+        guard let url = URL(string: "http://\(ip):8060/query/device-info") else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 3.0
+        
+        URLSession.shared.dataTask(with: request) { _, response, error in
+            DispatchQueue.main.async {
+                if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 {
+                    self.manualRokuIP = ip
+                    self.rokuIP = ip
+                    if !self.deviceDisplayName.contains("(") {
+                        self.deviceDisplayName = "Roku (\(ip))"
+                    }
+                    self.connectionStatus = .online
+                } else {
+                    self.rokuIP = ip
+                    self.deviceDisplayName = "Unreachable"
+                    self.connectionStatus = .offline
+                }
+            }
+        }.resume()
     }
     
     func saveBindings() {
@@ -346,20 +375,31 @@ struct RemoteWindowView: View {
     }
     
     func sendCommand(_ cmd: String) {
-        guard rokuIP != "Scanning..." && !rokuIP.isEmpty else { return }
-        guard let url = URL(string: "http://\(rokuIP):8060/keypress/\(cmd)") else { return }
+        let activeIP = rokuIP.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard activeIP != "Scanning..." && activeIP != "Not Found" && !activeIP.isEmpty else {
+            self.connectionStatus = .offline
+            return
+        }
+        
+        guard let url = URL(string: "http://\(activeIP):8060/keypress/\(cmd)") else { return }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        URLSession.shared.dataTask(with: request) { _, _, _ in
+        request.timeoutInterval = 3.0
+        
+        URLSession.shared.dataTask(with: request) { _, response, _ in
             DispatchQueue.main.async {
-                self.connectionStatus = .online
+                if let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 {
+                    self.connectionStatus = .online
+                } else {
+                    self.connectionStatus = .offline
+                }
             }
         }.resume()
-        print("➔ Sent: \(cmd)")
+        print("➔ Sent: \(cmd) to \(activeIP)")
     }
 }
 
-// MARK: - Roku Device Selection Drop-down Modal with Manual Option
+// MARK: - Roku Device Selection Drop-down Modal
 struct DevicePickerView: View {
     let devices: [RokuDevice]
     @Binding var selectedDevice: RokuDevice?
