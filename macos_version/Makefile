@@ -11,7 +11,7 @@ compile:
 	@mkdir -p $(BUILD_DIR)
 	swiftc -parse-as-library $(SOURCE) -o $(BUILD_DIR)/$(APP_NAME)
 
-# 2. Build the native macOS .app bundle structure locally with full Bonjour & ATS Network plists
+# 2. Build the native macOS .app bundle structure locally with Menu Bar settings, Bonjour, & ATS Network plists
 bundle: compile
 	@echo "Creating macOS .app bundle locally..."
 	@rm -rf $(APP_NAME).app
@@ -19,7 +19,7 @@ bundle: compile
 	@mkdir -p $(APP_NAME).app/Contents/Resources
 	@cp $(BUILD_DIR)/$(APP_NAME) $(APP_NAME).app/Contents/MacOS/$(APP_NAME)
 	
-	# Generate Info.plist with Bonjour services, local network description, and ATS HTTP exceptions
+	# Generate Info.plist with LSUIElement (true = Menu Bar mode, hides dock icon), Bonjour services, and ATS exceptions
 	@echo '<?xml version="1.0" encoding="UTF-8"?>' > $(APP_NAME).app/Contents/Info.plist
 	@echo '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' >> $(APP_NAME).app/Contents/Info.plist
 	@echo '<plist version="1.0"><dict>' >> $(APP_NAME).app/Contents/Info.plist
@@ -28,7 +28,7 @@ bundle: compile
 	@echo '    <key>CFBundleName</key><string>$(APP_NAME)</string>' >> $(APP_NAME).app/Contents/Info.plist
 	@echo '    <key>CFBundlePackageType</key><string>APPL</string>' >> $(APP_NAME).app/Contents/Info.plist
 	@echo '    <key>CFBundleShortVersionString</key><string>1.0</string>' >> $(APP_NAME).app/Contents/Info.plist
-	@echo '    <key>LSUIElement</key><false/>' >> $(APP_NAME).app/Contents/Info.plist
+	@echo '    <key>LSUIElement</key><true/>' >> $(APP_NAME).app/Contents/Info.plist
 	@echo '    <key>NSLocalNetworkUsageDescription</key><string>RokuRemote needs local network access to discover and control your Roku device.</string>' >> $(APP_NAME).app/Contents/Info.plist
 	@echo '    <array><key>NSBonjourServices</key><string>_lnp._tcp</string></array>' >> $(APP_NAME).app/Contents/Info.plist
 	@echo '    <key>NSAppTransportSecurity</key><dict>' >> $(APP_NAME).app/Contents/Info.plist
@@ -37,7 +37,7 @@ bundle: compile
 	@echo '</dict></plist>' >> $(APP_NAME).app/Contents/Info.plist
 	@echo "✅ Successfully built $(APP_NAME).app locally."
 
-# 3. Install locally to ~/Applications/ and automatically wipe local clutter
+# 3. Install locally to ~/Applications/ and automatically clean working directory clutter
 local: bundle
 	@echo "Installing to user Applications (~/Applications)..."
 	@mkdir -p $(USER_APPS)
@@ -46,7 +46,7 @@ local: bundle
 	@rm -rf $(APP_NAME).app $(BUILD_DIR)
 	@echo "✨ Successfully installed to ~/Applications/$(APP_NAME).app and cleaned workspace!"
 
-# 4. Install globally to /Applications and automatically wipe local clutter
+# 4. Install globally to /Applications and automatically clean working directory clutter
 install: bundle
 	@echo "Installing to /Applications..."
 	@sudo rm -rf /Applications/$(APP_NAME).app
