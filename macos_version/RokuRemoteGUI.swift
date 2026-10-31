@@ -2,7 +2,7 @@ import SwiftUI
 import Network
 import AppKit
 
-// MARK: - Bulletproof SSDP Discovery
+// MARK: - Bulletproof SSDP Discovery with Diagnostics
 struct RokuDevice: Identifiable, Hashable {
     let id = UUID()
     let name: String
@@ -10,6 +10,7 @@ struct RokuDevice: Identifiable, Hashable {
 }
 
 func discoverRokuDevices() -> [RokuDevice] {
+    print("🔍 Starting SSDP Network Scan...")
     let ssdpAddress = "239.255.255.250"
     let ssdpPort: UInt16 = 1900
     
@@ -21,12 +22,19 @@ func discoverRokuDevices() -> [RokuDevice] {
     var discoveredDevices: [RokuDevice] = []
     
     let sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)
-    guard sock >= 0 else { return [] }
+    guard sock >= 0 else {
+        print("❌ SSDP Error: Failed to create UDP socket.")
+        return []
+    }
     defer { close(sock) }
     
     var reuse: Int32 = 1
     setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout.size(ofValue: reuse)))
     
+    var broadcast: Int32 = 1
+    setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &broadcast, socklen_t(MemoryLayout.size(ofValue: broadcast)))
+    
+    // Bind to any available port so macOS routes replies correctly
     var localAddr = sockaddr_in()
     localAddr.sin_family = sa_family_t(AF_INET)
     localAddr.sin_port = 0
@@ -37,7 +45,11 @@ func discoverRokuDevices() -> [RokuDevice] {
             bind(sock, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
         }
     }
-    guard bindResult >= 0 else { return [] }
+    
+    guard bindResult >= 0 else {
+        print("❌ SSDP Error: Failed to bind socket. Errno: \(errno)")
+        return []
+    }
     
     var destAddr = sockaddr_in()
     destAddr.sin_family = sa_family_t(AF_INET)
@@ -54,13 +66,18 @@ func discoverRokuDevices() -> [RokuDevice] {
         }
     }
     
-    guard sent >= 0 else { return [] }
+    guard sent >= 0 else {
+        print("❌ SSDP Error: Failed to send multicast packet. Errno: \(errno)")
+        return []
+    }
     
-    let timeout: TimeInterval = 3.0
+    print("📡 SSDP M-SEARCH sent successfully. Listening for responses...")
+    
+    let timeout: TimeInterval = 2.5 // Spin for 2.5 seconds matching Python behavior
     let startTime = Date()
     
     while Date().timeIntervalSince(startTime) < timeout {
-        var tv = timeval(tv_sec: 0, tv_usec: 300_000)
+        var tv = timeval(tv_sec: 0, tv_usec: 300_000) // 300ms chunks
         setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
         
         var buffer = [UInt8](repeating: 0, count: 2048)
@@ -95,6 +112,7 @@ func discoverRokuDevices() -> [RokuDevice] {
             }
             
             if !deviceIP.isEmpty {
+                print("🎯 Discovered Roku at IP: \(deviceIP) (\(deviceName))")
                 let cleanName = deviceName.components(separatedBy: " ").first ?? "Roku"
                 let newDevice = RokuDevice(name: "\(cleanName) (\(deviceIP))", ip: deviceIP)
                 if !discoveredDevices.contains(where: { $0.ip == deviceIP }) {
@@ -104,6 +122,7 @@ func discoverRokuDevices() -> [RokuDevice] {
         }
     }
     
+    print("🏁 SSDP Scan finished. Found \(discoveredDevices.count) device(s).")
     return discoveredDevices
 }
 
@@ -229,7 +248,6 @@ struct RemoteWindowView: View {
             }
             .padding(18)
             
-            // Status LED Indicator & Connected Device Name in Bottom-Right Corner
             HStack(spacing: 5) {
                 Circle()
                     .fill(connectionStatus.color)
