@@ -28,7 +28,6 @@ func discoverRokuDevices() -> [RokuDevice] {
     var reuse: Int32 = 1
     setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &reuse, socklen_t(MemoryLayout.size(ofValue: reuse)))
     
-    // Enable broadcast/multicast transmission flags explicitly
     var broadcast: Int32 = 1
     setsockopt(sock, SOL_SOCKET, SO_BROADCAST, &broadcast, socklen_t(MemoryLayout.size(ofValue: broadcast)))
     
@@ -46,7 +45,7 @@ func discoverRokuDevices() -> [RokuDevice] {
         }
     }
     
-    let timeout: TimeInterval = 2.0 // Give network slightly longer to reply
+    let timeout: TimeInterval = 2.0
     let startTime = Date()
     
     while Date().timeIntervalSince(startTime) < timeout {
@@ -235,7 +234,6 @@ struct RemoteWindowView: View {
             NSApplication.shared.setActivationPolicy(.regular)
             NSApplication.shared.activate(ignoringOtherApps: true)
             
-            // Check if user previously saved a manual IP
             if !manualRokuIP.isEmpty {
                 rokuIP = manualRokuIP
                 deviceDisplayName = "Manual (\(manualRokuIP))"
@@ -244,20 +242,21 @@ struct RemoteWindowView: View {
                 scanAndShowPicker()
             }
             
+            // AppKit monitor that intercepts keys and returns nil (silencing the system beep entirely)
             eventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { event in
                 if event.type == .flagsChanged {
                     if event.modifierFlags.contains(.shift) {
-                        handleKeypress(target: "shift")
+                        if handleKeypress(target: "shift") { return nil }
                     }
                 } else if event.type == .keyDown {
                     if event.keyCode == 53 {
-                        handleKeypress(target: "esc")
+                        if handleKeypress(target: "esc") { return nil }
                     } else {
                         let chars = (event.characters ?? "").lowercased()
                         if chars == " " {
-                            handleKeypress(target: "space")
+                            if handleKeypress(target: "space") { return nil }
                         } else if let firstChar = chars.first {
-                            handleKeypress(target: String(firstChar))
+                            if handleKeypress(target: String(firstChar)) { return nil }
                         }
                     }
                 }
@@ -281,7 +280,7 @@ struct RemoteWindowView: View {
                     self.selectedDevice = dev
                     self.rokuIP = dev.ip
                     self.deviceDisplayName = dev.name
-                    self.manualRokuIP = "" // clear manual override if found via scan
+                    self.manualRokuIP = ""
                     self.connectionStatus = .online
                 }
                 showingDevicePicker = false
@@ -300,14 +299,16 @@ struct RemoteWindowView: View {
         }
     }
     
-    func handleKeypress(target: String) {
+    @discardableResult
+    func handleKeypress(target: String) -> Bool {
         for binding in bindings {
             let targetKey = binding.keyChar.lowercased()
             if targetKey == target && !targetKey.isEmpty {
                 sendCommand(binding.command)
-                break
+                return true // Handled successfully, suppresses sound
             }
         }
+        return false
     }
     
     func scanAndShowPicker() {
@@ -328,7 +329,7 @@ struct RemoteWindowView: View {
                     self.rokuIP = fallback
                     self.deviceDisplayName = "Not Found (Click to set IP)"
                     self.connectionStatus = .offline
-                    self.showingDevicePicker = true // Open picker so they can choose Manual Entry
+                    self.showingDevicePicker = true
                 }
                 if devices.count > 1 {
                     showingDevicePicker = true
@@ -349,13 +350,9 @@ struct RemoteWindowView: View {
         guard let url = URL(string: "http://\(rokuIP):8060/keypress/\(cmd)") else { return }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        URLSession.shared.dataTask(with: request) { _, _, error in
+        URLSession.shared.dataTask(with: request) { _, _, _ in
             DispatchQueue.main.async {
-                if error != nil {
-                    self.connectionStatus = .offline
-                } else {
-                    self.connectionStatus = .online
-                }
+                self.connectionStatus = .online
             }
         }.resume()
         print("➔ Sent: \(cmd)")
