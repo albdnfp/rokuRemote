@@ -182,7 +182,7 @@ struct RemoteWindowView: View {
     }
     
     var body: some View {
-        ZStack(alignment: .bottomTrailing) {
+        ZStack(alignment: .bottom) {
             VStack(spacing: 12) {
                 HStack {
                     Button(action: { scanAndShowPicker() }) {
@@ -232,21 +232,38 @@ struct RemoteWindowView: View {
             }
             .padding(18)
             
-            // Status LED Indicator & Connected Device Name in Bottom-Right Corner
-            HStack(spacing: 5) {
-                Circle()
-                    .fill(connectionStatus.color)
-                    .frame(width: 8, height: 8)
-                Text(deviceDisplayName)
-                    .font(.system(size: 9, design: .monospaced))
-                    .foregroundColor(.secondary)
+            // Bottom Bar: Quit Button (Left) & Status LED Indicator (Right)
+            HStack {
+                Button(action: {
+                    NSApplication.shared.terminate(nil)
+                }) {
+                    Text("Quit")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundColor(.secondary)
+                }
+                .buttonStyle(.borderless)
+                .help("Quit Application")
+                
+                Spacer()
+                
+                HStack(spacing: 5) {
+                    Circle()
+                        .fill(connectionStatus.color)
+                        .frame(width: 8, height: 8)
+                    Text(deviceDisplayName)
+                        .font(.system(size: 9, design: .monospaced))
+                        .foregroundColor(.secondary)
+                }
             }
-            .padding(10)
+            .padding(.horizontal, 14)
+            .padding(.bottom, 8)
         }
-        .frame(width: 275, height: 260)
+        .frame(width: 275, height: 265)
         .focusable(false)
         .focusEffectDisabled(true)
         .onAppear {
+            NSApp.setActivationPolicy(.accessory)
+            
             if !manualRokuIP.isEmpty {
                 verifyAndSetRokuIP(manualRokuIP)
             } else {
@@ -632,7 +649,7 @@ struct KeyCapturePopup: View {
     }
 }
 
-// MARK: - Menu Bar Extra App Entry Point (No Dock Icon, Lives in Menu Bar)
+// MARK: - Menu Bar Extra App Entry Point
 @main
 struct RokuRemoteApp: App {
     var body: some Scene {
