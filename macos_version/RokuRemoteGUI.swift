@@ -184,7 +184,7 @@ struct RemoteWindowView: View {
     
     var body: some View {
         ZStack(alignment: .bottom) {
-            VStack(spacing: 12) {
+            VStack(spacing: 10) {
                 HStack(spacing: 6) {
                     Button(action: { scanAndShowPicker() }) {
                         Text("Roku: \(rokuIP)")
@@ -219,7 +219,7 @@ struct RemoteWindowView: View {
                     Button("Play") { sendCommand("Play") }
                 }
                 
-                VStack(spacing: 6) {
+                VStack(spacing: 5) {
                     Button("▲") { sendCommand("Up") }
                     
                     HStack(spacing: 15) {
@@ -238,8 +238,11 @@ struct RemoteWindowView: View {
                     Button("Vol +") { sendCommand("VolumeUp") }
                 }
             }
-            .padding(16)
+            .padding(.horizontal, 14)
+            .padding(.top, 10)
+            .padding(.bottom, 32) // Extra bottom padding so buttons stay clear of the bottom bar
             
+            // Bottom Bar: Quit Button (Left) & Status LED Indicator (Right)
             HStack {
                 Button(action: {
                     NSApplication.shared.terminate(nil)
@@ -263,9 +266,9 @@ struct RemoteWindowView: View {
                 }
             }
             .padding(.horizontal, 14)
-            .padding(.bottom, 8)
+            .padding(.bottom, 10)
         }
-        .frame(width: 275, height: 265)
+        .frame(width: 275, height: 290) // Increased height to provide clean separation
         .focusable(false)
         .focusEffectDisabled(true)
         .onAppear {
@@ -766,7 +769,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
         
         popover = NSPopover()
-        popover.contentSize = NSSize(width: 275, height: 265)
+        popover.contentSize = NSSize(width: 275, height: 290)
         popover.behavior = .applicationDefined
         popover.contentViewController = NSHostingController(rootView: RemoteWindowView())
     }
