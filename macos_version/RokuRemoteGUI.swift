@@ -125,6 +125,7 @@ struct RemoteWindowView: View {
     @State private var connectionStatus: StatusState = .scanning
     @FocusState private var isFocused: Bool
     @State private var showingKeymapSheet = false
+    @State private var showingTextSearchSheet = false
     @State private var showingDevicePicker = false
     @State private var foundDevices: [RokuDevice] = []
     @State private var selectedDevice: RokuDevice? = nil
@@ -184,7 +185,7 @@ struct RemoteWindowView: View {
     var body: some View {
         ZStack(alignment: .bottom) {
             VStack(spacing: 12) {
-                HStack {
+                HStack(spacing: 6) {
                     Button(action: { scanAndShowPicker() }) {
                         Text("Roku: \(rokuIP)")
                             .font(.system(size: 10, design: .monospaced))
@@ -194,6 +195,13 @@ struct RemoteWindowView: View {
                     .help("Click to rescan network")
                     
                     Spacer()
+                    
+                    Button(action: { showingTextSearchSheet = true }) {
+                        Image(systemName: "keyboard")
+                            .font(.system(size: 12))
+                    }
+                    .buttonStyle(.borderless)
+                    .help("Type Text to Roku")
                     
                     Button(action: { showingKeymapSheet = true }) {
                         Image(systemName: "gearshape.fill")
@@ -222,7 +230,7 @@ struct RemoteWindowView: View {
                     
                     Button("▼") { sendCommand("Down") }
                 }
-                .padding(.vertical, 4)
+                .padding(.vertical, 2)
                 
                 HStack(spacing: 10) {
                     Button("Vol -") { sendCommand("VolumeDown") }
@@ -230,9 +238,8 @@ struct RemoteWindowView: View {
                     Button("Vol +") { sendCommand("VolumeUp") }
                 }
             }
-            .padding(18)
+            .padding(16)
             
-            // Bottom Bar: Quit Button (Left) & Status LED Indicator (Right)
             HStack {
                 Button(action: {
                     NSApplication.shared.terminate(nil)
@@ -271,6 +278,11 @@ struct RemoteWindowView: View {
             }
             
             eventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { event in
+                if let firstResponder = NSApp.keyWindow?.firstResponder,
+                   firstResponder is NSText || firstResponder is NSTextView {
+                    return event
+                }
+                
                 if event.type == .flagsChanged {
                     if event.modifierFlags.contains(.shift) {
                         if handleKeypress(target: "shift") { return nil }
@@ -297,6 +309,9 @@ struct RemoteWindowView: View {
         }
         .sheet(isPresented: $showingKeymapSheet) {
             KeymapEditorView(bindings: $bindings, onSave: saveBindings)
+        }
+        .sheet(isPresented: $showingTextSearchSheet) {
+            TextSearchPopupView(rokuIP: $rokuIP)
         }
         .sheet(isPresented: $showingDevicePicker) {
             DevicePickerView(devices: foundDevices, selectedDevice: $selectedDevice, onManualClick: {
@@ -413,6 +428,95 @@ struct RemoteWindowView: View {
             }
         }.resume()
         print("➔ Sent: \(cmd) to \(activeIP)")
+    }
+}
+
+// MARK: - Text Search & Input Popup Window
+struct TextSearchPopupView: View {
+    @Binding var rokuIP: String
+    @State private var textInputQuery: String = ""
+    @Environment(\.dismiss) var dismiss
+    
+    var body: some View {
+        VStack(spacing: 14) {
+            Text("Send Text to Roku")
+                .font(.headline)
+            
+            Text("Type text to send to the active Roku search field or textbox.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+                .multilineTextAlignment(.center)
+            
+            TextField("Type search query...", text: $textInputQuery)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit {
+                    sendTextToRoku()
+                }
+            
+            HStack(spacing: 10) {
+                Button("Clear Roku Field") {
+                    clearRokuField()
+                }
+                .controlSize(.small)
+                
+                Spacer()
+                
+                Button("Send Text") {
+                    sendTextToRoku()
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+            }
+            
+            HStack {
+                Button("Close") {
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+                Spacer()
+            }
+        }
+        .padding(18)
+        .frame(width: 280, height: 200)
+    }
+    
+    func sendTextToRoku() {
+        let activeIP = rokuIP.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard activeIP != "Scanning..." && activeIP != "Not Found" && !activeIP.isEmpty, !textInputQuery.isEmpty else { return }
+        
+        for (index, char) in textInputQuery.enumerated() {
+            let charString = String(char)
+            let encodedChar = charString.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? charString
+            
+            DispatchQueue.global().asyncAfter(deadline: .now() + Double(index) * 0.08) {
+                guard let url = URL(string: "http://\(activeIP):8060/keypress/Lit_\(encodedChar)") else { return }
+                var request = URLRequest(url: url)
+                request.httpMethod = "POST"
+                request.timeoutInterval = 2.0
+                URLSession.shared.dataTask(with: request).resume()
+            }
+        }
+        print("⌨️ Sent text query to Roku: \(textInputQuery)")
+        DispatchQueue.main.async {
+            self.textInputQuery = ""
+            dismiss()
+        }
+    }
+    
+    func clearRokuField() {
+        let activeIP = rokuIP.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard activeIP != "Scanning..." && activeIP != "Not Found" && !activeIP.isEmpty else { return }
+        
+        for i in 0..<20 {
+            DispatchQueue.global().asyncAfter(deadline: .now() + Double(i) * 0.05) {
+                guard let url = URL(string: "http://\(activeIP):8060/keypress/Backspace") else { return }
+                var request = URLRequest(url: url)
+                request.httpMethod = "POST"
+                request.timeoutInterval = 2.0
+                URLSession.shared.dataTask(with: request).resume()
+            }
+        }
+        print("🧹 Cleared active Roku text field.")
     }
 }
 
@@ -649,13 +753,44 @@ struct KeyCapturePopup: View {
     }
 }
 
-// MARK: - Menu Bar Extra App Entry Point
+// MARK: - Persistent Menu Bar Floating Panel Controller
+class AppDelegate: NSObject, NSApplicationDelegate {
+    var statusItem: NSStatusItem!
+    var popover: NSPopover!
+    
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        if let button = statusItem.button {
+            button.image = NSImage(systemSymbolName: "tv.fill", accessibilityDescription: "Roku Remote")
+            button.action = #selector(togglePopover(_:))
+        }
+        
+        popover = NSPopover()
+        popover.contentSize = NSSize(width: 275, height: 265)
+        popover.behavior = .applicationDefined
+        popover.contentViewController = NSHostingController(rootView: RemoteWindowView())
+    }
+    
+    @objc func togglePopover(_ sender: AnyObject?) {
+        if let button = statusItem.button {
+            if popover.isShown {
+                popover.performClose(sender)
+            } else {
+                popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+                popover.contentViewController?.view.window?.makeKey()
+            }
+        }
+    }
+}
+
+// MARK: - Sticky Status Item App Entry Point
 @main
 struct RokuRemoteApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+    
     var body: some Scene {
-        MenuBarExtra("Roku Remote", systemImage: "tv.fill") {
-            RemoteWindowView()
+        Settings {
+            EmptyView()
         }
-        .menuBarExtraStyle(.window)
     }
 }
